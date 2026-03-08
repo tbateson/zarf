@@ -6,6 +6,7 @@ package packager
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"time"
 
@@ -74,6 +75,11 @@ func DevDeploy(ctx context.Context, packagePath string, opts DevDeployOptions) (
 		return err
 	}
 
+	pkgPath, err := layout.ResolvePackagePath(packagePath)
+	if err != nil {
+		return fmt.Errorf("unable to access package path %q: %w", packagePath, err)
+	}
+
 	filter := filters.Combine(
 		filters.ByLocalOS(runtime.GOOS),
 		filters.ForDeploy(opts.OptionalComponents, false),
@@ -99,7 +105,7 @@ func DevDeploy(ctx context.Context, packagePath string, opts DevDeployOptions) (
 		OCIConcurrency:    opts.OCIConcurrency,
 		CachePath:         opts.CachePath,
 	}
-	pkgLayout, err := layout.AssemblePackage(ctx, pkg, packagePath, createOpts)
+	pkgLayout, err := layout.AssemblePackage(ctx, pkg, pkgPath, createOpts)
 	if err != nil {
 		return err
 	}

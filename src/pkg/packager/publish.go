@@ -219,6 +219,10 @@ func PublishSkeleton(ctx context.Context, path string, ref registry.Reference, o
 			return registry.Reference{}, fmt.Errorf("cannot publish skeleton package with image archives")
 		}
 	}
+	pkgPath, err := layout.ResolvePackagePath(path)
+	if err != nil {
+		return registry.Reference{}, fmt.Errorf("unable to access package path %q: %w", path, err)
+	}
 	// Create skeleton buildpath
 	createOpts := layout.AssembleSkeletonOptions{
 		SigningKeyPath:       opts.SigningKeyPath,
@@ -226,7 +230,7 @@ func PublishSkeleton(ctx context.Context, path string, ref registry.Reference, o
 		Flavor:               opts.Flavor,
 		WithBuildMachineInfo: opts.WithBuildMachineInfo,
 	}
-	pkgLayout, err := layout.AssembleSkeleton(ctx, pkg, path, createOpts)
+	pkgLayout, err := layout.AssembleSkeleton(ctx, pkg, pkgPath, createOpts)
 	if err != nil {
 		return registry.Reference{}, fmt.Errorf("unable to create skeleton: %w", err)
 	}

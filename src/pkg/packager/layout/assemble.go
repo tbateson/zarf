@@ -58,10 +58,29 @@ type AssembleOptions struct {
 	types.RemoteOptions
 }
 
+func buildTimestamp(manifestFile string) (time.Time, error) {
+	// See https://reproducible-builds.org/docs/source-date-epoch/
+	if sourceDateEpoch := os.Getenv("SOURCE_DATE_EPOCH"); sourceDateEpoch != "" {
+		tm, err := strconv.ParseInt(sourceDateEpoch, 10, 64)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("invalid SOURCE_DATE_EPOCH %s: %w", sourceDateEpoch, err)
+		}
+
+		return time.Unix(tm, 0), nil
+	}
+
+	info, err := os.Stat(manifestFile)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return info.ModTime(), nil
+}
+
 // AssemblePackage takes a package definition and returns a package layout with all the resources collected
-func AssemblePackage(ctx context.Context, pkg v1alpha1.ZarfPackage, packagePath string, opts AssembleOptions) (*PackageLayout, error) {
+func AssemblePackage(ctx context.Context, pkg v1alpha1.ZarfPackage, pkgPath PackagePath, opts AssembleOptions) (*PackageLayout, error) {
 	l := logger.From(ctx)
-	l.Info("assembling package", "path", packagePath)
+	l.Info("assembling package", "path", pkgPath)
 
 	if err := validateImageArchivesNoDuplicates(pkg.Components); err != nil {
 		return nil, err
@@ -104,7 +123,7 @@ func AssemblePackage(ctx context.Context, pkg v1alpha1.ZarfPackage, packagePath 
 		return nil, err
 	}
 	for _, component := range pkg.Components {
-		err := assemblePackageComponent(ctx, component, packagePath, buildPath, opts.RemoteOptions)
+		err := assemblePackageComponent(ctx, component, pkgPath.BaseDir, buildPath, opts.RemoteOptions)
 		if err != nil {
 			return nil, err
 		}
@@ -115,7 +134,7 @@ func AssemblePackage(ctx context.Context, pkg v1alpha1.ZarfPackage, packagePath 
 	for _, component := range pkg.Components {
 		for _, imageArchive := range component.ImageArchives {
 			if !filepath.IsAbs(imageArchive.Path) {
-				imageArchive.Path = filepath.Join(packagePath, imageArchive.Path)
+				imageArchive.Path = filepath.Join(pkgPath.BaseDir, imageArchive.Path)
 			}
 
 			archiveImageManifests, err := images.Unpack(ctx, imageArchive, filepath.Join(buildPath, ImagesDir), pkg.Metadata.Architecture)
@@ -176,18 +195,18 @@ func AssemblePackage(ctx context.Context, pkg v1alpha1.ZarfPackage, packagePath 
 	}
 
 	l.Debug("merging values files to package", "files", pkg.Values.Files)
-	if err = mergeAndWriteValuesFile(ctx, pkg.Values.Files, packagePath, buildPath); err != nil {
+	if err = mergeAndWriteValuesFile(ctx, pkg.Values.Files, pkgPath.BaseDir, buildPath); err != nil {
 		return nil, err
 	}
 
 	// Copy schema file if specified
 	if pkg.Values.Schema != "" {
-		if err = copyValuesSchema(ctx, pkg.Values.Schema, packagePath, buildPath); err != nil {
+		if err = copyValuesSchema(ctx, pkg.Values.Schema, pkgPath.BaseDir, buildPath); err != nil {
 			return nil, err
 		}
 	}
 
-	if err = createDocumentationTar(pkg, packagePath, buildPath); err != nil {
+	if err = createDocumentationTar(pkg, pkgPath.BaseDir, buildPath); err != nil {
 		return nil, err
 	}
 
@@ -202,7 +221,12 @@ func AssemblePackage(ctx context.Context, pkg v1alpha1.ZarfPackage, packagePath 
 	}
 	pkg.Metadata.AggregateChecksum = checksumSha
 
-	pkg = recordPackageMetadata(pkg, opts.Flavor, opts.RegistryOverrides, opts.WithBuildMachineInfo)
+	timestamp, err := buildTimestamp(pkgPath.ManifestFile)
+	if err != nil {
+		return nil, err
+	}
+
+	pkg = recordPackageMetadata(pkg, opts.Flavor, opts.RegistryOverrides, opts.WithBuildMachineInfo, timestamp)
 
 	b, err := goyaml.Marshal(pkg)
 	if err != nil {
@@ -241,7 +265,7 @@ type AssembleSkeletonOptions struct {
 }
 
 // AssembleSkeleton creates a skeleton package and returns the path to the created package.
-func AssembleSkeleton(ctx context.Context, pkg v1alpha1.ZarfPackage, packagePath string, opts AssembleSkeletonOptions) (*PackageLayout, error) {
+func AssembleSkeleton(ctx context.Context, pkg v1alpha1.ZarfPackage, pkgPath PackagePath, opts AssembleSkeletonOptions) (*PackageLayout, error) {
 	pkg.Metadata.Architecture = v1alpha1.SkeletonArch
 
 	buildPath, err := utils.MakeTempDir(config.CommonOptions.TempDirectory)
@@ -249,7 +273,7 @@ func AssembleSkeleton(ctx context.Context, pkg v1alpha1.ZarfPackage, packagePath
 		return nil, err
 	}
 
-	if err = createDocumentationTar(pkg, packagePath, buildPath); err != nil {
+	if err = createDocumentationTar(pkg, pkgPath.BaseDir, buildPath); err != nil {
 		return nil, err
 	}
 
@@ -259,7 +283,7 @@ func AssembleSkeleton(ctx context.Context, pkg v1alpha1.ZarfPackage, packagePath
 	//     is indicating that you are importing the "upstream" flavor of the zarf init package
 	for i := 0; i < len(pkg.Components); i++ {
 		pkg.Components[i].Only.Flavor = ""
-		err := assembleSkeletonComponent(ctx, pkg.Components[i], packagePath, buildPath)
+		err := assembleSkeletonComponent(ctx, pkg.Components[i], pkgPath.BaseDir, buildPath)
 		if err != nil {
 			return nil, err
 		}
@@ -276,7 +300,12 @@ func AssembleSkeleton(ctx context.Context, pkg v1alpha1.ZarfPackage, packagePath
 	}
 	pkg.Metadata.AggregateChecksum = checksumSha
 
-	pkg = recordPackageMetadata(pkg, opts.Flavor, nil, opts.WithBuildMachineInfo)
+	timestamp, err := buildTimestamp(pkgPath.ManifestFile)
+	if err != nil {
+		return nil, err
+	}
+
+	pkg = recordPackageMetadata(pkg, opts.Flavor, nil, opts.WithBuildMachineInfo, timestamp)
 
 	b, err := goyaml.Marshal(pkg)
 	if err != nil {
@@ -780,8 +809,7 @@ func assembleSkeletonComponent(ctx context.Context, component v1alpha1.ZarfCompo
 	return nil
 }
 
-func recordPackageMetadata(pkg v1alpha1.ZarfPackage, flavor string, registryOverrides []images.RegistryOverride, withBuildMachineInfo bool) v1alpha1.ZarfPackage {
-	now := time.Now()
+func recordPackageMetadata(pkg v1alpha1.ZarfPackage, flavor string, registryOverrides []images.RegistryOverride, withBuildMachineInfo bool, timestamp time.Time) v1alpha1.ZarfPackage {
 	if withBuildMachineInfo {
 		// Just use $USER env variable to avoid CGO issue.
 		// https://groups.google.com/g/golang-dev/c/ZFDDX3ZiJ84.
@@ -808,7 +836,7 @@ func recordPackageMetadata(pkg v1alpha1.ZarfPackage, flavor string, registryOver
 	pkg.Build.Version = config.CLIVersion
 
 	// Record the time of package creation.
-	pkg.Build.Timestamp = now.Format(v1alpha1.BuildTimestampFormat)
+	pkg.Build.Timestamp = timestamp.Format(v1alpha1.BuildTimestampFormat)
 
 	// Record the flavor of Zarf used to build this package (if any).
 	pkg.Build.Flavor = flavor

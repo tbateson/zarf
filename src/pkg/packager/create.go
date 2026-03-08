@@ -97,7 +97,7 @@ func Create(ctx context.Context, packagePath string, output string, opts CreateO
 		WithBuildMachineInfo: opts.WithBuildMachineInfo,
 		RemoteOptions:        opts.RemoteOptions,
 	}
-	pkgLayout, err := layout.AssemblePackage(ctx, pkg, pkgPath.BaseDir, assembleOpt)
+	pkgLayout, err := layout.AssemblePackage(ctx, pkg, pkgPath, assembleOpt)
 	if err != nil {
 		return "", err
 	}
